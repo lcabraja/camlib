@@ -6,6 +6,9 @@
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+// Newer device types are weak-linked and only used after a runtime version check below.
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
+#pragma clang diagnostic ignored "-Wunguarded-availability"
 
 typedef void (*camlib_frame_cb)(void *ctx, const uint8_t *bgra, int width, int height, size_t bytes_per_row);
 typedef void (*camlib_status_cb)(void *ctx, int kind, const char *message);
@@ -210,17 +213,25 @@ static void picker_status_cb(void *ctx, int kind, const char *message)
 }
 @end
 
+// `@available` would need ___isPlatformVersionAtLeast from compiler-rt, which Rust's linker does
+// not provide in release builds; NSProcessInfo answers the same question.
+static BOOL camlib_at_least(NSInteger major)
+{
+    NSOperatingSystemVersion version = {major, 0, 0};
+    return [NSProcessInfo.processInfo isOperatingSystemAtLeastVersion:version];
+}
+
 static NSArray<AVCaptureDevice *> *camlib_devices(void)
 {
     NSArray *deviceTypes;
-    if (@available(macOS 14, *)) {
+    if (camlib_at_least(14)) {
         deviceTypes = @[
             AVCaptureDeviceTypeBuiltInWideAngleCamera,
             AVCaptureDeviceTypeExternal,
             AVCaptureDeviceTypeContinuityCamera,
             AVCaptureDeviceTypeDeskViewCamera
         ];
-    } else if (@available(macOS 13, *)) {
+    } else if (camlib_at_least(13)) {
         deviceTypes = @[
             AVCaptureDeviceTypeBuiltInWideAngleCamera,
             AVCaptureDeviceTypeExternalUnknown,
