@@ -334,10 +334,15 @@ camlib_v4l2 *camlib_v4l2_open(const char *path, camlib_v4l2_mode *mode, uint32_t
     mode->height = fmt.fmt.pix.height;
     mode->fourcc = fmt.fmt.pix.pixelformat;
     *bytes_per_line = fmt.fmt.pix.bytesperline;
-    // V4L2's default quantization is full range only for RGB and the JPEG colorspace.
-    *full_range = fmt.fmt.pix.quantization == V4L2_QUANTIZATION_FULL_RANGE ||
-                  (fmt.fmt.pix.quantization == V4L2_QUANTIZATION_DEFAULT &&
-                   fmt.fmt.pix.colorspace == V4L2_COLORSPACE_JPEG);
+    // V4L2's default quantization is limited range for Y'CbCr unless the colorspace is JPEG.
+    // Grey sensors (and vivid) deliver full-range luma, so only an explicit limited range counts.
+    if (fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_GREY) {
+        *full_range = fmt.fmt.pix.quantization != V4L2_QUANTIZATION_LIM_RANGE;
+    } else {
+        *full_range = fmt.fmt.pix.quantization == V4L2_QUANTIZATION_FULL_RANGE ||
+                      (fmt.fmt.pix.quantization == V4L2_QUANTIZATION_DEFAULT &&
+                       fmt.fmt.pix.colorspace == V4L2_COLORSPACE_JPEG);
+    }
 
     struct v4l2_streamparm parm;
     memset(&parm, 0, sizeof parm);
