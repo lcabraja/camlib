@@ -49,3 +49,8 @@ cargo run --example picker                             # native picker window (m
 The `test-sources` feature adds hidden entry points used by CI: on Linux, the `v4l2_formats`
 example captures every pixel format from the kernel's `vivid` virtual camera and compares it
 with RGB24; on Windows, `file_source` reads a video file through the camera reader path.
+
+## License
+
+GPL-2.0-or-later, the same terms as the OBS Studio sources this library follows. Applications that
+link camlib are distributed under GPL-compatible terms.
