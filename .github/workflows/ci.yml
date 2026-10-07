@@ -61,6 +61,46 @@ jobs:
           name: linux-frames
           path: "*.ppm"
 
+  # MJPEG as UVC webcams send it: ffmpeg streams JPEG frames into a v4l2loopback device.
+  linux-mjpeg-loopback:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Load v4l2loopback
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg v4l-utils v4l2loopback-dkms "linux-headers-$(uname -r)"
+          sudo modprobe v4l2loopback video_nr=7 card_label=camlib-loopback exclusive_caps=1
+          sudo udevadm settle
+          sudo chmod a+rw /dev/video7
+      - name: Stream a still image as MJPEG
+        run: |
+          ffmpeg -v error -f lavfi -i testsrc2=size=1280x720 -frames:v 1 -y still.png
+          ffmpeg -v error -f lavfi -i testsrc2=size=1280x720 -frames:v 1 -pix_fmt rgb24 -f rawvideo -y still.rgb
+          nohup ffmpeg -v error -re -loop 1 -i still.png -r 30 -c:v mjpeg -huffman default \
+            -pix_fmt yuvj422p -q:v 3 -f v4l2 /dev/video7 > ffmpeg.log 2>&1 &
+          sleep 3
+          cat ffmpeg.log
+          v4l2-ctl -d /dev/video7 --list-formats
+      - name: Capture and compare with the source image
+        run: |
+          cargo build --release --example snapshot
+          target/release/examples/snapshot camlib-loopback frame.ppm
+          python3 - <<'PY'
+          frame = open("frame.ppm", "rb").read().split(b"\n", 3)[3]
+          still = open("still.rgb", "rb").read()
+          assert len(frame) == len(still), (len(frame), len(still))
+          mean = sum(abs(a - b) for a, b in zip(frame, still)) / len(still)
+          print(f"mean error against the source image: {mean:.2f}")
+          assert mean < 4, "MJPEG capture does not match the source"
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mjpeg-frames
+          path: "*.ppm"
+
   # The Media Foundation reader path, fed by a video file since runners have no camera.
   windows-media-foundation:
     runs-on: windows-2022
