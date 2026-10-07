@@ -54,10 +54,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .zip(reference.data.as_chunks::<3>().0.iter())
                     .map(|(a, b)| {
                         if gray {
-                            let luma = (u32::from(b[0]) * 299
-                                + u32::from(b[1]) * 587
-                                + u32::from(b[2]) * 114)
-                                / 1000;
+                            // vivid derives grey from Rec. 709 luma.
+                            let luma = (u32::from(b[0]) * 2126
+                                + u32::from(b[1]) * 7152
+                                + u32::from(b[2]) * 722
+                                + 5000)
+                                / 10000;
                             u64::from(a[0].abs_diff(luma as u8))
                         } else {
                             a.iter()
