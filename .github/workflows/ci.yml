@@ -70,7 +70,7 @@ jobs:
       - name: Load v4l2loopback
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg v4l-utils v4l2loopback-dkms "linux-headers-$(uname -r)"
+          sudo apt-get install -y ffmpeg v4l-utils v4l2loopback-dkms "linux-headers-$(uname -r)" "linux-modules-extra-$(uname -r)"
           sudo modprobe v4l2loopback video_nr=7 card_label=camlib-loopback exclusive_caps=1
           sudo udevadm settle
           sudo chmod a+rw /dev/video7
