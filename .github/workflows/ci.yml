@@ -42,6 +42,12 @@ jobs:
           sudo chmod a+rw /dev/video*
           v4l2-ctl --list-devices
           v4l2-ctl -d /dev/video0 --list-formats-ext | head -60
+      - name: Diagnose listing (temporary)
+        run: |
+          ls -la /dev/video* /sys/class/video4linux/ || true
+          cargo build --example snapshot
+          sudo apt-get install -y strace
+          strace -f -e trace=openat,ioctl,getdents64 target/debug/examples/snapshot vivid x.ppm 2>&1 | grep -v -E "\.so|/proc|/etc|locale" | tail -40 || true
       - name: Snapshot through the default mode
         run: cargo run --example snapshot -- vivid frame.ppm
       - name: Every pixel format against RGB24
