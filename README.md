@@ -1,48 +1,42 @@
 # camlib
 
-Small zero-dependency Rust camera library distilled from OBS Studio's camera source flow.
+Zero-dependency Rust camera capture, distilled from OBS Studio's native camera sources. Each OS
+uses its own backend, compiled directly by `build.rs`; there are no Rust crate dependencies.
 
-## Goals
-
-- No Rust crate dependencies.
-- Native OS camera backends, not a generic webcam wrapper.
-- A small API for listing cameras, opening by stable id, reading RGB frames, and closing.
-- A tiny example app that delegates UI and camera behavior to the library.
-
-OBS keeps capture native per OS:
-
-- Windows: DirectShow device enumeration/opening in `plugins/win-dshow/win-dshow.cpp`.
-- macOS: AVFoundation discovery/session setup in `plugins/mac-avcapture`.
-- Linux: V4L2 device discovery/open/stream lifecycle in `plugins/linux-v4l2/v4l2-input.c`.
-
-This crate keeps that logic shape:
-
-1. Enumerate native cameras into stable `id` plus human `label`.
-2. Select a device by id.
-3. Open the OS-native stream.
-4. Poll frames.
-5. Close the stream and release the backend handle.
-
-There are no Rust crate dependencies. Native OS integration is compiled directly by `build.rs`.
-The current implemented backend is macOS AVFoundation; Linux V4L2 and Windows capture are explicit
-future native backends, not hidden behind a generic camera crate.
-
-## API Sketch
+| OS | Backend | Status |
+|---|---|---|
+| macOS | AVFoundation (`plugins/mac-avcapture`) | implemented |
+| Linux | V4L2 (`plugins/linux-v4l2`) | planned |
+| Windows | DirectShow / Media Foundation (`plugins/win-dshow`) | planned |
 
 ```rust
+use std::time::Duration;
+
+if !camlib::request_authorization() {
+    return Err(camlib::CameraError::PermissionDenied);
+}
 let devices = camlib::list_cameras()?;
+// Opens the native mode nearest 1280x720@30; `open_camera_with` prefers another.
 let mut camera = camlib::open_camera(&devices[0].id)?;
-let frame = camera.frame_rgb()?;
+// Returns a frame newer than the last one, or `Timeout` / `Disconnected`.
+let frame = camera.wait_frame(Duration::from_secs(1))?; // packed RGB
 camera.close();
 # Ok::<(), camlib::CameraError>(())
 ```
 
-## Run the picker
+`request_authorization` may show the OS prompt and blocks, so call it off the UI thread.
+`OpenedCamera` is `Send`; `close` (or drop) waits for in-flight native callbacks.
+
+## macOS notes
+
+- Apps need `NSCameraUsageDescription`, plus `NSCameraUseContinuityCameraDeviceType` for iPhone
+  cameras. Permission belongs to the responsible app: a CLI inherits its terminal's permission.
+- If another app holds a device's configuration lock, the camera is shared in its current mode
+  and `status()` says so.
+
+## Examples
 
 ```sh
-cargo run --example picker
+cargo run --example snapshot -- "FaceTime" frame.ppm   # save one frame
+cargo run --example picker                             # native picker window
 ```
-
-The example is a tiny launcher into the library-owned native picker. On macOS it opens a Cocoa
-window with a camera picker, `Open`/`Close` buttons, and an AVFoundation BGRA preview path inspired
-by OBS's `mac-avcapture` plugin.

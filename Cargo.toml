@@ -2,5 +2,7 @@
 name = "camlib"
 version = "0.1.0"
 edition = "2024"
+description = "Zero-dependency native camera capture"
+repository = "https://github.com/lcabraja/camlib"
 
 [dependencies]
