@@ -35,6 +35,7 @@ unsafe extern "C" {
         path: *const c_char,
         mode: *mut NativeMode,
         bytes_per_line: *mut u32,
+        full_range: *mut c_int,
         error: *mut c_char,
         error_len: usize,
     ) -> *mut c_void;
@@ -137,6 +138,7 @@ struct V4l2Stream {
     width: usize,
     height: usize,
     stride: usize,
+    full_range: bool,
 }
 
 // The handle is only used by the capture thread that owns this stream.
@@ -158,6 +160,7 @@ extern "C" fn deliver(ctx: *mut c_void, data: *const u8, length: usize) {
         height: stream.height,
         stride: stream.stride,
         bottom_up: false,
+        full_range: stream.full_range,
         data,
     }));
 }
@@ -247,12 +250,14 @@ fn open_filtered(
             CameraError::Native("camera offers no pixel format camlib can decode".into())
         })?;
         let mut stride = 0u32;
+        let mut full_range: c_int = 0;
         let mut error = [0 as c_char; 256];
         let handle = unsafe {
             camlib_v4l2_open(
                 path.as_ptr(),
                 &mut native,
                 &mut stride,
+                &mut full_range,
                 error.as_mut_ptr(),
                 error.len(),
             )
@@ -280,6 +285,7 @@ fn open_filtered(
             width: native.width as usize,
             height: native.height as usize,
             stride: stride as usize,
+            full_range: full_range != 0,
         };
         Ok((stream, format, None))
     })

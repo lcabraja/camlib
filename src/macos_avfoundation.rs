@@ -241,6 +241,7 @@ extern "C" fn frame_callback(
         height: height as usize,
         stride: bytes_per_row,
         bottom_up: false,
+        full_range: true,
         data,
     }) {
         Ok((width, height, rgb)) => slot.publish(width, height, rgb),

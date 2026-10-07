@@ -5,7 +5,7 @@
 //! arithmetic-coded and 12-bit JPEGs are rejected. Chroma is upsampled by replication, and the
 //! inverse DCT is the IJG "islow" integer transform.
 
-use crate::convert::clamp;
+use crate::convert::yuv;
 
 pub(crate) struct Image {
     pub width: u32,
@@ -600,13 +600,7 @@ fn to_rgb(width: usize, height: usize, components: &[Component]) -> Result<Vec<u
     }
     let mut rgb = vec![0u8; width * height * 3];
     for (i, px) in rgb.as_chunks_mut::<3>().0.iter_mut().enumerate() {
-        let luma = i32::from(planes[0][i]) << 16;
-        let cb = i32::from(planes[1][i]) - 128;
-        let cr = i32::from(planes[2][i]) - 128;
-        // JFIF full-range coefficients in 16.16 fixed point.
-        px[0] = clamp((luma + 91881 * cr + 32768) >> 16);
-        px[1] = clamp((luma - 22554 * cb - 46802 * cr + 32768) >> 16);
-        px[2] = clamp((luma + 116130 * cb + 32768) >> 16);
+        yuv(px, planes[0][i], planes[1][i], planes[2][i], true);
     }
     Ok(rgb)
 }

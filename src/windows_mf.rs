@@ -544,6 +544,7 @@ impl MfStream {
                 height,
                 stride,
                 bottom_up: pitch < 0,
+                full_range: true,
                 data: unsafe { std::slice::from_raw_parts(base, len) },
             })
             .map_err(StreamError::Frame)

@@ -40,6 +40,8 @@ pub(crate) struct RawFrame<'a> {
     pub stride: usize,
     /// Rows are stored bottom row first (Windows DIB-style RGB).
     pub bottom_up: bool,
+    /// YUV and grey samples use 0-255 instead of 16-235 (luma) / 16-240 (chroma).
+    pub full_range: bool,
     pub data: &'a [u8],
 }
 
@@ -82,7 +84,7 @@ pub(crate) fn to_rgb(frame: &RawFrame<'_>) -> Result<Rgb, String> {
                 for (x, px) in out.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                     let group = &row[(x / 2) * 4..(x / 2) * 4 + 4];
                     let luma = if x % 2 == 0 { group[y0] } else { group[y1] };
-                    yuv(px, luma, group[u], group[v]);
+                    yuv(px, luma, group[u], group[v], frame.full_range);
                 }
             }
         }
@@ -123,7 +125,7 @@ pub(crate) fn to_rgb(frame: &RawFrame<'_>) -> Result<Rgb, String> {
                         Layout::I420 => (chroma[c + x / 2], chroma[chroma_len + c + x / 2]),
                         _ => (chroma[chroma_len + c + x / 2], chroma[c + x / 2]),
                     };
-                    yuv(px, luma_row[x], cb, cr);
+                    yuv(px, luma_row[x], cb, cr, frame.full_range);
                 }
             }
         }
@@ -140,7 +142,11 @@ pub(crate) fn to_rgb(frame: &RawFrame<'_>) -> Result<Rgb, String> {
                     Layout::Rgb24 => out.copy_from_slice(row),
                     Layout::Gray => {
                         for (px, &g) in out.as_chunks_mut::<3>().0.iter_mut().zip(row) {
-                            px.fill(g);
+                            px.fill(if frame.full_range {
+                                g
+                            } else {
+                                clamp(((i32::from(g) - 16) * 255 + 109) / 219)
+                            });
                         }
                     }
                     _ => {
@@ -190,7 +196,18 @@ fn row<'a>(
         })
 }
 
-fn yuv(px: &mut [u8], y: u8, u: u8, v: u8) {
+/// BT.601 Y'CbCr to RGB, in limited or full (JFIF) range.
+pub(crate) fn yuv(px: &mut [u8], y: u8, u: u8, v: u8, full_range: bool) {
+    if full_range {
+        let luma = i32::from(y) << 16;
+        let cb = i32::from(u) - 128;
+        let cr = i32::from(v) - 128;
+        // JFIF coefficients in 16.16 fixed point.
+        px[0] = clamp((luma + 91881 * cr + 32768) >> 16);
+        px[1] = clamp((luma - 22554 * cb - 46802 * cr + 32768) >> 16);
+        px[2] = clamp((luma + 116130 * cb + 32768) >> 16);
+        return;
+    }
     let c = (i32::from(y) - 16) * 298;
     let d = i32::from(u) - 128;
     let e = i32::from(v) - 128;
@@ -199,7 +216,7 @@ fn yuv(px: &mut [u8], y: u8, u: u8, v: u8) {
     px[2] = clamp((c + 516 * d + 128) >> 8);
 }
 
-pub(crate) fn clamp(value: i32) -> u8 {
+fn clamp(value: i32) -> u8 {
     value.clamp(0, 255) as u8
 }
 
@@ -214,6 +231,7 @@ mod tests {
             height,
             stride,
             bottom_up: false,
+            full_range: false,
             data,
         })
         .unwrap()
@@ -308,13 +326,17 @@ mod tests {
     fn rgb_layouts_and_bottom_up_rows() {
         assert_eq!(convert(Layout::Bgr24, 1, 1, 0, &[3, 2, 1]), [1, 2, 3]);
         assert_eq!(convert(Layout::Bgrx, 1, 1, 0, &[3, 2, 1, 0]), [1, 2, 3]);
-        assert_eq!(convert(Layout::Gray, 2, 1, 0, &[7, 9]), [7, 7, 7, 9, 9, 9]);
+        assert_eq!(
+            convert(Layout::Gray, 2, 1, 0, &[16, 235]),
+            [0, 0, 0, 255, 255, 255]
+        );
         let flipped = to_rgb(&RawFrame {
             layout: Layout::Rgb24,
             width: 1,
             height: 2,
             stride: 4,
             bottom_up: true,
+            full_range: false,
             data: &[1, 1, 1, 0, 2, 2, 2, 0],
         })
         .unwrap();
@@ -337,6 +359,7 @@ mod tests {
                     height: 64,
                     stride: 0,
                     bottom_up: false,
+                    full_range: false,
                     data: &[0; 100],
                 })
                 .is_err()

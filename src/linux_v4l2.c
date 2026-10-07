@@ -300,8 +300,9 @@ void camlib_v4l2_close(camlib_v4l2 *camera)
 }
 
 // Opens `path` in `mode` (updated to what the driver chose) and starts streaming.
-camlib_v4l2 *camlib_v4l2_open(const char *path, camlib_v4l2_mode *mode, uint32_t *bytes_per_line, char *error,
-                              size_t error_len)
+// `full_range` reports whether YUV and grey samples span 0-255 rather than 16-235.
+camlib_v4l2 *camlib_v4l2_open(const char *path, camlib_v4l2_mode *mode, uint32_t *bytes_per_line, int *full_range,
+                              char *error, size_t error_len)
 {
     camlib_v4l2 *camera = calloc(1, sizeof *camera);
     if (!camera) {
@@ -333,6 +334,10 @@ camlib_v4l2 *camlib_v4l2_open(const char *path, camlib_v4l2_mode *mode, uint32_t
     mode->height = fmt.fmt.pix.height;
     mode->fourcc = fmt.fmt.pix.pixelformat;
     *bytes_per_line = fmt.fmt.pix.bytesperline;
+    // V4L2's default quantization is full range only for RGB and the JPEG colorspace.
+    *full_range = fmt.fmt.pix.quantization == V4L2_QUANTIZATION_FULL_RANGE ||
+                  (fmt.fmt.pix.quantization == V4L2_QUANTIZATION_DEFAULT &&
+                   fmt.fmt.pix.colorspace == V4L2_COLORSPACE_JPEG);
 
     struct v4l2_streamparm parm;
     memset(&parm, 0, sizeof parm);
