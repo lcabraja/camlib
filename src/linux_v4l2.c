@@ -107,6 +107,24 @@ static void stable_path(const char *node, char *out, size_t out_len)
     closedir(dir);
 }
 
+// Reads /sys/class/video4linux/<node>/<file> without its trailing newline.
+static int sysfs_value(const char *node, const char *file, char *out, size_t out_len)
+{
+    char path[PATH_MAX];
+    snprintf(path, sizeof path, "/sys/class/video4linux/%s/%s", node, file);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return -1;
+    }
+    int ok = fgets(out, (int)out_len, f) != NULL;
+    fclose(f);
+    if (!ok) {
+        return -1;
+    }
+    out[strcspn(out, "\n")] = '\0';
+    return 0;
+}
+
 // Lines of "id\tname\tbus_info\n". Returns the bytes needed including the terminator.
 size_t camlib_v4l2_list(char *buffer, size_t buffer_len)
 {
@@ -128,22 +146,32 @@ size_t camlib_v4l2_list(char *buffer, size_t buffer_len)
     char line[PATH_MAX + 128], node[PATH_MAX], id[PATH_MAX];
     for (size_t i = 0; i < name_count; ++i) {
         snprintf(node, sizeof node, "/dev/%s", names[i]);
-        free(names[i]);
+        char card[64] = "", bus[64] = "";
         int fd = open(node, O_RDWR | O_NONBLOCK | O_CLOEXEC);
         if (fd == -1) {
-            continue;
+            // Still list cameras the user may not open (usually not in the "video" group), so
+            // opening reports why instead of the camera silently missing. Without capabilities,
+            // sysfs index 0 marks a device's primary node rather than its metadata node.
+            if (errno != EACCES || sysfs_value(names[i], "index", line, sizeof line) != 0 || strcmp(line, "0") != 0 ||
+                sysfs_value(names[i], "name", card, sizeof card) != 0) {
+                free(names[i]);
+                continue;
+            }
+            snprintf(bus, sizeof bus, "permission denied");
+        } else {
+            struct v4l2_capability cap;
+            uint32_t caps = capture_caps(fd, &cap);
+            close(fd);
+            // Metadata and output nodes of the same camera are skipped.
+            if (!(caps & V4L2_CAP_VIDEO_CAPTURE) || !(caps & V4L2_CAP_STREAMING)) {
+                free(names[i]);
+                continue;
+            }
+            snprintf(card, sizeof card, "%s", (const char *)cap.card);
+            snprintf(bus, sizeof bus, "%s", (const char *)cap.bus_info);
         }
-        struct v4l2_capability cap;
-        uint32_t caps = capture_caps(fd, &cap);
-        close(fd);
-        // Metadata and output nodes of the same camera are skipped.
-        if (!(caps & V4L2_CAP_VIDEO_CAPTURE) || !(caps & V4L2_CAP_STREAMING)) {
-            continue;
-        }
+        free(names[i]);
         stable_path(node, id, sizeof id);
-        char card[sizeof cap.card + 1], bus[sizeof cap.bus_info + 1];
-        snprintf(card, sizeof card, "%s", (const char *)cap.card);
-        snprintf(bus, sizeof bus, "%s", (const char *)cap.bus_info);
         clean(card);
         clean(bus);
         clean(id);
