@@ -6,3 +6,15 @@ description = "Zero-dependency native camera capture"
 repository = "https://github.com/lcabraja/camlib"
 
 [dependencies]
+
+[features]
+# Hidden test entry points, such as reading a video file through the Windows camera pipeline.
+test-sources = []
+
+[[example]]
+name = "file_source"
+required-features = ["test-sources"]
+
+[[example]]
+name = "v4l2_formats"
+required-features = ["test-sources"]

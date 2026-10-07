@@ -7,8 +7,29 @@
 
 use std::{error::Error, fmt, time::Duration};
 
+// Only V4L2 delivers every layout and only Linux and Windows choose modes in Rust; both modules
+// still compile everywhere so their tests run on every platform.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod convert;
+mod frames;
+mod jpeg;
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+mod modes;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod threaded;
+
+#[cfg(target_os = "linux")]
+#[path = "linux_v4l2.rs"]
+mod backend;
 #[cfg(target_os = "macos")]
-mod macos_avfoundation;
+#[path = "macos_avfoundation.rs"]
+mod backend;
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[path = "unsupported.rs"]
+mod backend;
+#[cfg(target_os = "windows")]
+#[path = "windows_mf.rs"]
+mod backend;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CameraDevice {
@@ -165,7 +186,7 @@ pub fn native_backend() -> Option<CameraBackend> {
 pub fn authorization() -> Authorization {
     #[cfg(target_os = "macos")]
     {
-        macos_avfoundation::authorization()
+        backend::authorization()
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -180,7 +201,7 @@ pub fn authorization() -> Authorization {
 pub fn request_authorization() -> bool {
     #[cfg(target_os = "macos")]
     {
-        macos_avfoundation::request_authorization()
+        backend::request_authorization()
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -190,15 +211,7 @@ pub fn request_authorization() -> bool {
 }
 
 pub fn list_cameras() -> Result<Vec<CameraDevice>> {
-    #[cfg(target_os = "macos")]
-    {
-        macos_avfoundation::list_cameras()
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err(CameraError::UnsupportedPlatform(std::env::consts::OS))
-    }
+    backend::list_cameras()
 }
 
 /// The mode `open_camera` asks for: 720p at 30fps, a good balance for most webcams.
@@ -217,106 +230,65 @@ pub fn open_camera_with(
     device_id: impl AsRef<str>,
     preferred: CameraFormat,
 ) -> Result<OpenedCamera> {
-    #[cfg(target_os = "macos")]
-    {
-        macos_avfoundation::NativeCamera::open(device_id.as_ref(), preferred)
-            .map(|native| OpenedCamera { native })
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (device_id, preferred);
-        Err(CameraError::UnsupportedPlatform(std::env::consts::OS))
-    }
+    backend::open(device_id.as_ref(), preferred).map(|native| OpenedCamera { native })
 }
 
-#[cfg(not(target_os = "macos"))]
-enum NoBackend {}
+/// Read a video file through the Windows camera pipeline, for testing without a camera.
+#[cfg(all(target_os = "windows", feature = "test-sources"))]
+#[doc(hidden)]
+pub fn open_video_file(path: &str, preferred: CameraFormat) -> Result<OpenedCamera> {
+    backend::open_file(path, preferred).map(|native| OpenedCamera { native })
+}
+
+/// Open a V4L2 camera using only the native pixel format `fourcc`, to test each converter.
+#[cfg(all(target_os = "linux", feature = "test-sources"))]
+#[doc(hidden)]
+pub fn open_camera_with_fourcc(
+    device_id: &str,
+    preferred: CameraFormat,
+    fourcc: [u8; 4],
+) -> Result<OpenedCamera> {
+    backend::open_fourcc(device_id, preferred, fourcc).map(|native| OpenedCamera { native })
+}
 
 pub struct OpenedCamera {
-    #[cfg(target_os = "macos")]
-    native: macos_avfoundation::NativeCamera,
-    #[cfg(not(target_os = "macos"))]
-    native: NoBackend,
+    native: backend::NativeCamera,
 }
 
 impl OpenedCamera {
     #[must_use]
     pub fn device(&self) -> &CameraDevice {
-        #[cfg(target_os = "macos")]
-        {
-            self.native.device()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            match self.native {}
-        }
+        self.native.device()
     }
 
     /// The selected native mode, updated to the delivered size once frames arrive.
     #[must_use]
     pub fn format(&self) -> CameraFormat {
-        #[cfg(target_os = "macos")]
-        {
-            self.native.format()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            match self.native {}
-        }
+        self.native.format()
     }
 
     /// The newest frame, which may be one already returned.
     pub fn frame_rgb(&mut self) -> Result<RgbFrame> {
-        #[cfg(target_os = "macos")]
-        {
-            self.native.frame_rgb()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            match self.native {}
-        }
+        self.native.frame_rgb()
     }
 
     /// Wait for a frame newer than any this camera has returned.
     ///
     /// Fails with `Timeout` if none arrives in time and with `Disconnected` once the device is
-    /// gone or the native session fails.
+    /// gone or the native stream fails.
     pub fn wait_frame(&mut self, timeout: Duration) -> Result<RgbFrame> {
-        #[cfg(target_os = "macos")]
-        {
-            self.native.wait_frame(timeout)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = timeout;
-            match self.native {}
-        }
+        self.native.wait_frame(timeout)
     }
 
     /// The latest native status message, if the backend reported one.
     #[must_use]
     pub fn status(&self) -> Option<String> {
-        #[cfg(target_os = "macos")]
-        {
-            self.native.status()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            match self.native {}
-        }
+        self.native.status()
     }
 
     /// Stop streaming and release the device. Safe to call more than once.
     pub fn close(&mut self) {
-        #[cfg(target_os = "macos")]
-        {
-            self.native.close();
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            match self.native {}
-        }
+        self.native.close();
     }
 }
 
@@ -326,10 +298,11 @@ impl Drop for OpenedCamera {
     }
 }
 
+/// Run the native picker window (macOS only).
 pub fn run_camera_picker() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        macos_avfoundation::run_camera_picker();
+        backend::run_camera_picker();
         Ok(())
     }
 

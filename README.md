@@ -3,11 +3,14 @@
 Zero-dependency Rust camera capture, distilled from OBS Studio's native camera sources. Each OS
 uses its own backend, compiled directly by `build.rs`; there are no Rust crate dependencies.
 
-| OS | Backend | Status |
+| OS | Backend | Notes |
 |---|---|---|
-| macOS | AVFoundation (`plugins/mac-avcapture`) | implemented |
-| Linux | V4L2 (`plugins/linux-v4l2`) | planned |
-| Windows | DirectShow / Media Foundation (`plugins/win-dshow`) | planned |
+| macOS | AVFoundation, after OBS `plugins/mac-avcapture` | BGRA from the system |
+| Linux | V4L2, after OBS `plugins/linux-v4l2` | YUYV, UYVY, YVYU, NV12, NV21, I420, YV12, RGB, BGR, BGRX, grey and MJPEG |
+| Windows | Media Foundation source reader | decodes MJPEG/H.264 and converts to RGB itself |
+
+MJPEG is decoded by camlib's own baseline JPEG decoder (bit-exact with libjpeg, about 8 ms per
+720p frame in release builds). Every backend picks the native mode nearest the request.
 
 ```rust
 use std::time::Duration;
@@ -38,5 +41,11 @@ camera.close();
 
 ```sh
 cargo run --example snapshot -- "FaceTime" frame.ppm   # save one frame
-cargo run --example picker                             # native picker window
+cargo run --example picker                             # native picker window (macOS)
 ```
+
+## Testing without a camera
+
+The `test-sources` feature adds hidden entry points used by CI: on Linux, the `v4l2_formats`
+example captures every pixel format from the kernel's `vivid` virtual camera and compares it
+with RGB24; on Windows, `file_source` reads a video file through the camera reader path.

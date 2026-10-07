@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --features test-sources -- -D warnings
+      - run: cargo test --features test-sources
+
+  # Real kernel capture through the vivid virtual camera driver.
+  linux-vivid:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Load vivid
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y v4l-utils "linux-modules-extra-$(uname -r)"
+          sudo modprobe vivid n_devs=1 node_types=0x1
+          sudo chmod a+rw /dev/video*
+          v4l2-ctl --list-devices
+          v4l2-ctl -d /dev/video0 --list-formats-ext | head -60
+      - name: Snapshot through the default mode
+        run: cargo run --example snapshot -- vivid frame.ppm
+      - name: Every pixel format against RGB24
+        run: cargo run --features test-sources --example v4l2_formats -- vivid
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-frames
+          path: "*.ppm"
+
+  # The Media Foundation reader path, fed by a video file since runners have no camera.
+  windows-media-foundation:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Enumerate cameras
+        run: |
+          set +e
+          cargo run --example snapshot
+          code=$?
+          # 1 is "no matching camera"; anything else (such as an access violation) fails.
+          [ "$code" -eq 0 ] || [ "$code" -eq 1 ]
+      - name: Read a video file as a camera
+        run: cargo run --features test-sources --example file_source -- tests/fixtures/clip.mp4 frame.ppm tests/fixtures/clip-frame3.rgb
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-frames
+          path: "*.ppm"

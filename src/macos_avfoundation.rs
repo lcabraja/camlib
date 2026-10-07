@@ -1,12 +1,13 @@
 use crate::{
     Authorization, CameraBackend, CameraDevice, CameraError, CameraFormat, PixelFormat, Result,
     RgbFrame,
+    convert::{self, Layout, RawFrame},
+    frames::FrameSlot,
 };
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
-    sync::{Condvar, Mutex, MutexGuard},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 type FrameCallback = extern "C" fn(*mut c_void, *const u8, i32, i32, usize);
@@ -82,40 +83,22 @@ pub fn list_cameras() -> Result<Vec<CameraDevice>> {
         .collect())
 }
 
-#[derive(Default)]
-struct Shared {
-    latest: Option<RgbFrame>,
-    sequence: u64,
-    status: Option<String>,
-    failure: Option<String>,
-}
-
-#[derive(Default)]
-struct CallbackState {
-    shared: Mutex<Shared>,
-    changed: Condvar,
-}
-
-impl CallbackState {
-    fn lock(&self) -> MutexGuard<'_, Shared> {
-        self.shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
 pub struct NativeCamera {
     device: CameraDevice,
     format: CameraFormat,
     handle: *mut c_void,
     // Owned by this struct; native callbacks borrow it until `camlib_avf_close` returns.
-    state: *mut CallbackState,
+    state: *mut FrameSlot,
     returned: u64,
 }
 
 // AVFoundation sessions may be started and stopped from any thread, and the callback state is
 // synchronized, so an open camera can move to the thread that consumes its frames.
 unsafe impl Send for NativeCamera {}
+
+pub fn open(device_id: &str, preferred: CameraFormat) -> Result<NativeCamera> {
+    NativeCamera::open(device_id, preferred)
+}
 
 impl NativeCamera {
     pub fn open(device_id: &str, preferred: CameraFormat) -> Result<Self> {
@@ -128,7 +111,7 @@ impl NativeCamera {
             .ok_or_else(|| CameraError::DeviceNotFound(device_id.to_string()))?;
         let id = CString::new(device_id)
             .map_err(|error| CameraError::InvalidInput(error.to_string()))?;
-        let state = Box::into_raw(Box::new(CallbackState::default()));
+        let state = Box::into_raw(Box::new(FrameSlot::default()));
         let mut error = [0 as c_char; 512];
         let clamp = |value: u32| c_int::try_from(value).unwrap_or(c_int::MAX);
         let mut format = NativeFormat {
@@ -185,47 +168,22 @@ impl NativeCamera {
     }
 
     pub fn status(&self) -> Option<String> {
-        self.state()?.lock().status.clone()
+        self.state()?.status()
     }
 
     pub fn frame_rgb(&mut self) -> Result<RgbFrame> {
-        let state = self.state().ok_or(CameraError::NoFrame)?;
-        let shared = state.lock();
-        if let Some(failure) = &shared.failure {
-            return Err(CameraError::Disconnected(failure.clone()));
-        }
-        let frame = shared.latest.clone().ok_or(CameraError::NoFrame)?;
-        drop(shared);
+        let frame = self.state().ok_or(CameraError::NoFrame)?.latest()?;
         self.accept(&frame);
         Ok(frame)
     }
 
     pub fn wait_frame(&mut self, timeout: Duration) -> Result<RgbFrame> {
-        let state = self.state().ok_or(CameraError::NoFrame)?;
-        let deadline = Instant::now() + timeout;
-        let mut shared = state.lock();
-        loop {
-            if let Some(failure) = &shared.failure {
-                return Err(CameraError::Disconnected(failure.clone()));
-            }
-            if let Some(frame) = &shared.latest
-                && frame.sequence > self.returned
-            {
-                let frame = frame.clone();
-                drop(shared);
-                self.accept(&frame);
-                return Ok(frame);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(CameraError::Timeout);
-            }
-            shared = state
-                .changed
-                .wait_timeout(shared, deadline - now)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
-        }
+        let frame = self
+            .state()
+            .ok_or(CameraError::NoFrame)?
+            .wait_newer(self.returned, timeout)?;
+        self.accept(&frame);
+        Ok(frame)
     }
 
     pub fn close(&mut self) {
@@ -240,7 +198,7 @@ impl NativeCamera {
         }
     }
 
-    fn state(&self) -> Option<&CallbackState> {
+    fn state(&self) -> Option<&FrameSlot> {
         unsafe { self.state.as_ref() }
     }
 
@@ -274,40 +232,20 @@ extern "C" fn frame_callback(
         return;
     }
 
-    let width = width as usize;
-    let height = height as usize;
-    if bytes_per_row < width * 4 {
-        return;
+    // SAFETY: the backend keeps `height` rows of `bytes_per_row` bytes locked for the call.
+    let data = unsafe { std::slice::from_raw_parts(bgra, bytes_per_row * height as usize) };
+    let slot = unsafe { &*(ctx.cast::<FrameSlot>()) };
+    match convert::to_rgb(&RawFrame {
+        layout: Layout::Bgrx,
+        width: width as usize,
+        height: height as usize,
+        stride: bytes_per_row,
+        bottom_up: false,
+        data,
+    }) {
+        Ok((width, height, rgb)) => slot.publish(width, height, rgb),
+        Err(message) => slot.report(message, false),
     }
-    let mut rgb = vec![0u8; width * height * 3];
-
-    // SAFETY: the backend guarantees `height` rows of `bytes_per_row` bytes stay locked for the call.
-    let source = unsafe { std::slice::from_raw_parts(bgra, bytes_per_row * height) };
-    for (src_row, dst_row) in source
-        .chunks_exact(bytes_per_row)
-        .zip(rgb.chunks_exact_mut(width * 3))
-    {
-        for (src, dst) in src_row[..width * 4]
-            .chunks_exact(4)
-            .zip(dst_row.chunks_exact_mut(3))
-        {
-            dst[0] = src[2];
-            dst[1] = src[1];
-            dst[2] = src[0];
-        }
-    }
-
-    let state = unsafe { &*(ctx.cast::<CallbackState>()) };
-    let mut shared = state.lock();
-    shared.sequence += 1;
-    shared.latest = Some(RgbFrame {
-        width: width as u32,
-        height: height as u32,
-        sequence: shared.sequence,
-        data: rgb,
-    });
-    drop(shared);
-    state.changed.notify_all();
 }
 
 extern "C" fn status_callback(ctx: *mut c_void, kind: c_int, message: *const c_char) {
@@ -315,15 +253,9 @@ extern "C" fn status_callback(ctx: *mut c_void, kind: c_int, message: *const c_c
         return;
     }
 
-    let state = unsafe { &*(ctx.cast::<CallbackState>()) };
+    let slot = unsafe { &*(ctx.cast::<FrameSlot>()) };
     let message = unsafe { CStr::from_ptr(message) }
         .to_string_lossy()
         .into_owned();
-    let mut shared = state.lock();
-    if matches!(kind, STATUS_ERROR | STATUS_DISCONNECTED) {
-        shared.failure = Some(message.clone());
-    }
-    shared.status = Some(message);
-    drop(shared);
-    state.changed.notify_all();
+    slot.report(message, matches!(kind, STATUS_ERROR | STATUS_DISCONNECTED));
 }
